@@ -1,6 +1,6 @@
-﻿# LeagueSkins (Chameleon mirror)
+﻿# LeagueSkins (Void mirror)
 
-Skin catalog for the Chameleon skin changer, in `skins/<championID>/<skinID>/` layout
+Skin catalog for the Void, in `skins/<championID>/<skinID>/` layout
 with language mappings under `resources/`.
 
 Seeded from a local snapshot and kept current by a daily GitHub Action
