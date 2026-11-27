@@ -8,36 +8,86 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: sync-skins
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout mirror
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
       - name: Download upstream catalog
         run: |
-          curl -L -o upstream.zip https://github.com/Alban1911/LeagueSkins/archive/refs/heads/main.zip
+          curl -fL --retry 3 -o upstream.zip https://github.com/Alban1911/LeagueSkins/archive/refs/heads/main.zip
           unzip -q upstream.zip -d upstream_extract
+
       - name: Sync skins / resources / previews
         run: |
           SRC=upstream_extract/LeagueSkins-main
           for d in skins resources previews; do
             if [ -d "$SRC/$d" ]; then
               mkdir -p "$d"
-              rsync -a "$SRC/$d/" "$d/"
+              rsync -a --checksum "$SRC/$d/" "$d/"
             fi
           done
           rm -rf upstream.zip upstream_extract
-      - name: Commit changes
+
+      - name: Commit and push in batches
         run: |
+          set -euo pipefail
           git config user.name "chameleon-sync-bot"
           git config user.email "actions@users.noreply.github.com"
+          git config http.postBuffer 524288000
+
+          DATE=$(date -u +%Y-%m-%d)
+          BATCH_LIMIT=$((150 * 1024 * 1024))   # ~150 MB per push
+          staged_bytes=0
+          batch=0
+
+          push_with_retry() {
+            for i in 1 2 3; do
+              if git push origin HEAD:main; then return 0; fi
+              echo "Push failed (attempt $i), retrying in 20s..."
+              sleep 20
+            done
+            return 1
+          }
+
+          flush() {
+            if ! git diff --cached --quiet; then
+              batch=$((batch + 1))
+              git commit -q -m "Sync skins from upstream ($DATE) [part $batch]"
+              push_with_retry
+            fi
+            staged_bytes=0
+          }
+
+          # One unit per champion folder, plus resources and previews
+          units=$(ls -d skins/*/ 2>/dev/null || true)
+          units="$units resources previews"
+
+          for u in $units; do
+            [ -e "$u" ] || continue
+            git add -A -- "$u"
+            size=$(git diff --cached --name-only -z -- "$u" | xargs -0 -r du -cb 2>/dev/null | tail -1 | cut -f1)
+            staged_bytes=$((staged_bytes + ${size:-0}))
+            if [ "$staged_bytes" -ge "$BATCH_LIMIT" ]; then
+              flush
+            fi
+          done
+
+          # Anything left over (incl. files outside those folders)
           git add -A
-          if git diff --cached --quiet; then
+          flush
+
+          if [ "$batch" -eq 0 ]; then
             echo "No changes to sync."
           else
-            git commit -m "Sync skins from upstream ($(date -u +%Y-%m-%d))"
-            git push
+            echo "Pushed $batch batch(es)."
           fi
